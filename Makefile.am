@@ -36,6 +36,10 @@ else
 minidlnad_SOURCES += select.c
 endif
 
+if HAVE_INOTIFY
+minidlnad_SOURCES += monitor_inotify.c
+endif
+
 minidlnad_LDADD = \
 	@LIBJPEG_LIBS@ \
 	@LIBID3TAG_LIBS@ \
