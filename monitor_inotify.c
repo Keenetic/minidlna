@@ -22,6 +22,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <libgen.h>
@@ -70,6 +71,7 @@ struct watch
 
 static struct watch *watches = NULL;
 static struct watch *lastwatch = NULL;
+static pthread_t thread_id;
 
 static volatile int stop_notifier;
 
@@ -256,7 +258,8 @@ inotify_remove_watches(int fd)
 	return rm_watches;
 }
 
-static void *start_inotify(void *unused)
+static void *
+inotify_thread(void *arg)
 {
 	struct pollfd pollfds[1];
 	char buffer[BUF_LEN];
@@ -278,9 +281,6 @@ static void *start_inotify(void *unused)
 
 	while( GETFLAG(SCANNING_MASK) )
 	{
-		if( quitting )
-			goto quitting;
-
 		if( stop_notifier )
 			goto quitting;
 
@@ -290,7 +290,6 @@ static void *start_inotify(void *unused)
 	if (setpriority(PRIO_PROCESS, 0, 19) == -1)
 		DPRINTF(E_WARN, L_INOTIFY,  "Failed to reduce inotify thread priority\n");
 	sqlite3_release_memory(1<<31);
-	lav_register_all();
 
 	while( !quitting && !stop_notifier )
 	{
@@ -396,18 +395,27 @@ quitting:
 }
 
 /* start a notification thread with a blocked SIGCHLD */
-void start_inotify_thread(pthread_t *inotify_thread)
+void
+monitor_start(void)
 {
-	if ((inotify_thread && *inotify_thread)) {
+	if (thread_id != 0) {
 		DPRINTF(E_ERROR, L_INOTIFY, "Notifier thread already running.\n");
 		return;
 	}
+
+	if (!sqlite3_threadsafe() || sqlite3_libversion_number() < 3005001) {
+		DPRINTF(E_ERROR, L_GENERAL, "SQLite library is not threadsafe!"
+		    "Inotify will be disabled.\n");
+		return;
+	}
+
 	process_signal_block(SIGCHLD);
 	stop_notifier = 0;
 
-	if( pthread_create(inotify_thread, NULL, start_inotify, NULL) ) {
-		DPRINTF(E_FATAL, L_INOTIFY, "ERROR: pthread_create() failed for start_inotify.\n");
-		*inotify_thread = 0;
+	if( pthread_create(&thread_id, NULL, inotify_thread, NULL) ) {
+		DPRINTF(E_FATAL, L_INOTIFY, "pthread_create() failed [%s]\n",
+			strerror(errno));
+		thread_id = 0;
 	} else {
 		DPRINTF(E_INFO, L_INOTIFY, "Notifier thread started.\n");
 	}
@@ -415,14 +423,17 @@ void start_inotify_thread(pthread_t *inotify_thread)
 	process_signal_unblock(SIGCHLD);
 }
 
-void stop_inotify_thread(pthread_t *inotify_thread)
+void
+monitor_stop(void)
 {
-	if (inotify_thread && *inotify_thread) {
+	if (thread_id != 0) {
 		stop_notifier = 1;
-		pthread_join(*inotify_thread, NULL);
-		*inotify_thread = 0;
+		pthread_kill(thread_id, SIGCHLD);
+		pthread_join(thread_id, NULL);
+		thread_id = 0;
 		DPRINTF(E_INFO, L_INOTIFY, "Notifier thread stopped.\n");
-	} else {
+	} else
+	{
 		DPRINTF(E_ERROR, L_INOTIFY, "Notifier thread already stopped.\n");
 	}
 }

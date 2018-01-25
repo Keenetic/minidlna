@@ -64,7 +64,6 @@
 #include <time.h>
 #include <signal.h>
 #include <errno.h>
-#include <pthread.h>
 #include <limits.h>
 #include <libgen.h>
 #include <pwd.h>
@@ -96,6 +95,7 @@
 #include "log.h"
 #include "tivo_beacon.h"
 #include "tivo_utils.h"
+#include "libav.h"
 
 #define MIN_LOOP_INTERVAL_MS	5000
 
@@ -1329,12 +1329,24 @@ static int media_dirs_equal(
 	return 1;
 }
 
+#ifdef HAVE_WATCH
+void
+start_monitor()
+{
+
+	if (!GETFLAG(INOTIFY_MASK))
+		return;
+
+	lav_register_all();
+	monitor_start();
+}
+#endif
+
 static int
 read_configuration_updates(
 		const char *const updatefile,
 		const char *const statusfile,
-		pid_t *scanner_pid,
-		pthread_t *inotify_thread)
+		pid_t *scanner_pid)
 {
 	int ret;
 	int ifaces = 0;
@@ -1422,7 +1434,9 @@ read_configuration_updates(
 
 		/* stop a inotify thread and a scanner process */
 		stop_scanning(scanner_pid);
-		stop_inotify_thread(inotify_thread);
+#ifdef HAVE_WATCH
+		monitor_stop();
+#endif
 	}
 
 	if (update_db_path)
@@ -1464,7 +1478,9 @@ read_configuration_updates(
 	if (update_db_path || update_media_dirs || rescan)
 	{
 		/* start after database updating */
-		start_inotify_thread(inotify_thread);
+#ifdef HAVE_WATCH
+		start_monitor();
+#endif
 	}
 
 	return 0;
@@ -1492,7 +1508,6 @@ main(int argc, char **argv)
 	u_long timeout;	/* in milliseconds */
 	int last_changecnt = 0;
 	pid_t scanner_pid = 0;
-	pthread_t inotify_thread = 0;
 	struct event ssdpev, httpev, monev;
 #ifdef TIVO_SUPPORT
 	uint8_t beacon_interval = 5;
@@ -1527,21 +1542,10 @@ main(int argc, char **argv)
 
 	lastdbtime = _get_dbtime();
 
-#ifdef HAVE_INOTIFY
-	if( GETFLAG(INOTIFY_MASK) )
-	{
-		if (!sqlite3_threadsafe() || sqlite3_libversion_number() < 3005001)
-			DPRINTF(E_ERROR, L_GENERAL, "SQLite library is not threadsafe!  "
-			                            "Inotify will be disabled.\n");
-		else
-			start_inotify_thread(&inotify_thread);
-	}
-#endif /* HAVE_INOTIFY */
-
-#ifdef HAVE_KQUEUE
+#ifdef HAVE_WATCH
 	if (!GETFLAG(SCANNING_MASK))
-		kqueue_monitor_start();
-#endif /* HAVE_KQUEUE */
+		start_monitor();
+#endif
 
 	smonitor = OpenAndConfMonitorSocket();
 	if (smonitor > 0)
@@ -1663,9 +1667,9 @@ main(int argc, char **argv)
 		{
 			if (_get_dbtime() != lastdbtime)
 				updateID++;
-#ifdef HAVE_KQUEUE
-			kqueue_monitor_start();
-#endif /* HAVE_KQUEUE */
+#ifdef HAVE_WATCH
+			start_monitor();
+#endif
 		}
 
 		if (timeout > MIN_LOOP_INTERVAL_MS)
@@ -1726,7 +1730,7 @@ main(int argc, char **argv)
 		{
 			DPRINTF(E_INFO, L_GENERAL, "Updating configuration...\n");
 			process_signal_block(SIGHUP);
-			if (read_configuration_updates(updatefile, statusfile, &scanner_pid, &inotify_thread) != 0)
+			if (read_configuration_updates(updatefile, statusfile, &scanner_pid) != 0)
 			{
 				DPRINTF(E_ERROR, L_GENERAL, "Failed to reload configuration updates\n");
 				quitting = 1;
@@ -1773,7 +1777,9 @@ shutdown:
 		close(lan_addr[i].snotify);
 	}
 
-	stop_inotify_thread(&inotify_thread);
+#ifdef HAVE_WATCH
+	monitor_stop();
+#endif
 
 	/* kill other child processes */
 	process_reap_children();

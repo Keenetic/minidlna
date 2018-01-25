@@ -4,14 +4,6 @@
 #include <signal.h>
 #include <pthread.h>
 
-#ifdef HAVE_INOTIFY
-void start_inotify_thread(pthread_t *inotify_thread);
-void stop_inotify_thread(pthread_t *inotify_thread);
-#else
-static inline void start_inotify_thread(pthread_t *inotify_thread){};
-static inline void stop_inotify_thread(pthread_t *inotify_thread){};
-#endif
-
 int monitor_insert_file(const char *name, const char *path);
 int monitor_insert_directory(int fd, char *name, const char * path);
 int monitor_remove_file(const char * path);
@@ -23,8 +15,7 @@ int monitor_add_watch(int, const char *);
 int monitor_remove_watch(int, const char *);
 #endif
 
-#ifdef HAVE_KQUEUE
-void kqueue_monitor_start(void);
-#endif
+void monitor_start();
+void monitor_stop();
 
 #endif //__MONITOR_H__
