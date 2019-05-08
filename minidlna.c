@@ -1505,7 +1505,6 @@ main(int argc, char **argv)
 	struct upnphttp * next;
 	struct timeval tv, timeofday, lastnotifytime = {0, 0};
 	time_t lastupdatetime = 0, lastdbtime = 0;
-	u_long timeout;	/* in milliseconds */
 	int last_changecnt = 0;
 	pid_t scanner_pid = 0;
 	struct event ssdpev, httpev, monev;
@@ -1576,6 +1575,9 @@ main(int argc, char **argv)
 	httpev = (struct event ){ .fd = shttpl, .rdwr = EVENT_READ, .process = ProcessListen };
 	event_module.add(&httpev);
 
+	if (gettimeofday(&timeofday, 0) < 0)
+		DPRINTF(E_FATAL, L_GENERAL, "gettimeofday(): %s\n", strerror(errno));
+
 #ifdef TIVO_SUPPORT
 	if (GETFLAG(TIVO_MASK))
 	{
@@ -1600,18 +1602,17 @@ main(int argc, char **argv)
 			tivo_bcast.sin_family = AF_INET;
 			tivo_bcast.sin_addr.s_addr = htonl(getBcastAddress());
 			tivo_bcast.sin_port = htons(2190);
+			lastbeacontime = timeofday;
 		}
 	}
 #endif
 
-	reload_ifaces(0);
-	lastnotifytime.tv_sec = time(NULL) + runtime_vars.notify_interval;
+	reload_ifaces(0);	/* sends SSDP notifies */
+	lastnotifytime = timeofday;
 
 	/* main loop */
 	while (!quitting)
 	{
-		if (gettimeofday(&timeofday, 0) < 0)
-			DPRINTF(E_FATAL, L_GENERAL, "gettimeofday(): %s\n", strerror(errno));
 		/* Check if we need to send SSDP NOTIFY messages and do it if
 		 * needed */
 		tv = lastnotifytime;
@@ -1625,63 +1626,66 @@ main(int argc, char **argv)
 					runtime_vars.port, runtime_vars.notify_interval);
 			}
 			lastnotifytime = timeofday;
-			timeout = runtime_vars.notify_interval * 1000;
+			tv.tv_sec = runtime_vars.notify_interval;
+			tv.tv_usec = 0;
 		}
 		else
 		{
 			timevalsub(&tv, &timeofday);
-			timeout = tv.tv_sec * 1000 + tv.tv_usec / 1000;
 		}
 #ifdef TIVO_SUPPORT
 		if (sbeacon >= 0)
 		{
-			u_long beacontimeout;
+			struct timeval beacontv;
 
-			tv = lastbeacontime;
-			tv.tv_sec += beacon_interval;
-			if (timevalcmp(&timeofday, &tv, >=))
+			beacontv = lastbeacontime;
+			beacontv.tv_sec += beacon_interval;
+			if (timevalcmp(&timeofday, &beacontv, >=))
 			{
 				sendBeaconMessage(sbeacon, &tivo_bcast, sizeof(struct sockaddr_in), 1);
 				lastbeacontime = timeofday;
-				beacontimeout = beacon_interval * 1000;
-				if (timeout > beacon_interval * 1000)
-					timeout = beacon_interval * 1000;
 				/* Beacons should be sent every 5 seconds or
 				 * so for the first minute, then every minute
 				 * or so thereafter. */
 				if (beacon_interval == 5 && (timeofday.tv_sec - startup_time) > 60)
 					beacon_interval = 60;
+				beacontv.tv_sec = beacon_interval;
+				beacontv.tv_usec = 0;
 			}
 			else
 			{
-				timevalsub(&tv, &timeofday);
-				beacontimeout = tv.tv_sec * 1000 +
-				    tv.tv_usec / 1000;
+				timevalsub(&beacontv, &timeofday);
 			}
-			if (timeout > beacontimeout)
-				timeout = beacontimeout;
+			if (timevalcmp(&tv, &beacontv, >))
+				tv = beacontv;
 		}
 #endif
 
-		if (stop_scanning(&scanner_pid))
-		{
-			if (_get_dbtime() != lastdbtime)
-				updateID++;
+		if (GETFLAG(SCANNING_MASK)) {
+			if (stop_scanning(&scanner_pid)) {
+				if (_get_dbtime() != lastdbtime)
+					updateID++;
 #ifdef HAVE_WATCH
-			start_monitor();
+				start_monitor();
 #endif
+			} else
+				/* Keep checking for the scanner every sec. */
+				tv.tv_sec = MIN_LOOP_INTERVAL_MS;
 		}
 
-		if (timeout > MIN_LOOP_INTERVAL_MS)
-			timeout = MIN_LOOP_INTERVAL_MS;
+		if (tv.tv_sec > MIN_LOOP_INTERVAL_MS)
+			tv.tv_sec = MIN_LOOP_INTERVAL_MS;
 
-		event_module.process(timeout);
+		event_module.process(&tv);
 
 		if (quitting)
 		{
 			DPRINTF(E_DEBUG, L_GENERAL, "received SIGTERM, good-bye\n");
 			goto shutdown;
 		}
+
+		if (gettimeofday(&timeofday, 0) < 0)
+			DPRINTF(E_FATAL, L_GENERAL, "gettimeofday(): %s\n", strerror(errno));
 
 		upnpevents_gc();
 
