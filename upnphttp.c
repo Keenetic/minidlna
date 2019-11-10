@@ -1307,6 +1307,10 @@ send_file(struct upnphttp * h, int sendfd, off_t offset, off_t end_offset)
 				else if( err != EAGAIN )
 					break;
 			}
+			else if( ret == 0 )
+			{
+				break;  /* Premature end of file */
+			}
 			else
 			{
 				//DPRINTF(E_DEBUG, L_HTTP, "sent %lld bytes to %d. offset is now %lld.\n", ret, h->ev.fd, offset);
@@ -1328,6 +1332,10 @@ send_file(struct upnphttp * h, int sendfd, off_t offset, off_t end_offset)
 				continue;
 			else
 				break;
+		}
+		else if( ret == 0 )
+		{
+			break;  /* premature end of file */
 		}
 		ret = write(h->ev.fd, buf, ret);
 		if( ret == -1 ) {
